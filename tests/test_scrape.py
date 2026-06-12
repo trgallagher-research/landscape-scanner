@@ -1,0 +1,104 @@
+"""Tests for the scrape layer: HTML text extraction, caching behaviour,
+and truncation. No network — the ladder's fetch step is stubbed."""
+
+from scanner.scrape import Scraper, html_to_text, url_cache_key
+
+
+SAMPLE_HTML = """
+<html>
+  <head><title>Ignored</title><style>body {color: red}</style></head>
+  <body>
+    <script>var ignored = true;</script>
+    <h1>Acme Youth Enterprise Fund</h1>
+    <p>Founded in 2015, the fund operates in 14 counties across Kenya.</p>
+    <nav>Home About Contact</nav>
+  </body>
+</html>
+"""
+
+
+def test_html_to_text_keeps_visible_text_only():
+    text = html_to_text(SAMPLE_HTML)
+    assert "Acme Youth Enterprise Fund" in text
+    assert "Founded in 2015" in text
+    assert "var ignored" not in text       # script stripped
+    assert "color: red" not in text        # style stripped
+
+
+def test_cache_roundtrip_avoids_refetch(tmp_path, monkeypatch):
+    """Second fetch of the same URL must come from cache, not the network."""
+    scraper = Scraper(cache_dir=tmp_path)
+    calls = {"count": 0}
+
+    def fake_fetch(url):
+        calls["count"] += 1
+        return "scraped", "Some page text " * 50
+
+    monkeypatch.setattr(scraper, "_fetch_uncached", fake_fetch)
+
+    first = scraper.fetch("https://example.org/page")
+    second = scraper.fetch("https://example.org/page")
+    assert first == second
+    assert calls["count"] == 1  # network hit exactly once
+
+
+def test_failures_are_cached_too(tmp_path, monkeypatch):
+    """An unreachable URL is not retried endlessly within a run."""
+    scraper = Scraper(cache_dir=tmp_path)
+    calls = {"count": 0}
+
+    def fake_fetch(url):
+        calls["count"] += 1
+        return "unreachable", None
+
+    monkeypatch.setattr(scraper, "_fetch_uncached", fake_fetch)
+
+    assert scraper.fetch("https://dead.example.org") == ("unreachable", None)
+    assert scraper.fetch("https://dead.example.org") == ("unreachable", None)
+    assert calls["count"] == 1
+
+
+def test_truncation_caps_page_text(tmp_path, monkeypatch):
+    """Pages are truncated to max_chars before they hit LLM input."""
+    scraper = Scraper(cache_dir=tmp_path, max_chars=100)
+
+    class FakeResponse:
+        status_code = 200
+        headers = {"content-type": "text/plain"}
+        text = "x" * 10_000
+        content = b""
+
+        def raise_for_status(self):
+            return None
+
+    monkeypatch.setattr("scanner.scrape.httpx.get", lambda *a, **k: FakeResponse())
+    status, text = scraper.fetch("https://example.org/long")
+    assert status == "scraped"
+    assert len(text) == 100
+
+
+def test_tiny_pages_count_as_unreachable(tmp_path, monkeypatch):
+    """A near-empty page (bot wall / JS shell) can't ground claims —
+    honest answer is 'unreachable', not a fake success."""
+    scraper = Scraper(cache_dir=tmp_path)
+
+    class FakeResponse:
+        status_code = 200
+        headers = {"content-type": "text/html"}
+        text = "<html><body>403</body></html>"
+        content = b""
+
+        def raise_for_status(self):
+            return None
+
+    monkeypatch.setattr("scanner.scrape.httpx.get", lambda *a, **k: FakeResponse())
+    status, text = scraper.fetch("https://blocked.example.org")
+    assert status == "unreachable"
+    assert text is None
+
+
+def test_cache_key_is_stable_and_filename_safe():
+    key1 = url_cache_key("https://example.org/page?a=1")
+    key2 = url_cache_key("https://example.org/page?a=1")
+    assert key1 == key2
+    assert key1.isalnum()

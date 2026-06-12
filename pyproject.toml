@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "landscape-scanner"
+version = "0.1.0"
+description = "Verification-grounded landscape analysis: ask a field-scan question, get an auditable report"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+dependencies = [
+    # Core data models and validation
+    "pydantic>=2.5",
+    # HTTP for search providers and scraping
+    "httpx>=0.27",
+    # Fuzzy string matching for the claim-restoration path
+    "rapidfuzz>=3.5",
+]
+
+[project.optional-dependencies]
+# The local web UI (step 6 of the build)
+app = [
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+]
+# PDF text extraction tier of the scrape ladder
+pdf = [
+    "pymupdf>=1.24",
+]
+# Development and testing
+dev = [
+    "pytest>=8.0",
+]
+all = [
+    "landscape-scanner[app,pdf,dev]",
+]
+
+[project.scripts]
+scanner = "scanner.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
