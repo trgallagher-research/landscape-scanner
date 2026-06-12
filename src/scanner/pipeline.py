@@ -83,6 +83,19 @@ class Pipeline:
             max_chars=config.max_page_chars,
         )
         self.coverage_notes: list[str] = []
+        # Optional progress hook (set by the web app's RunManager). Called
+        # with keyword fields that mirror RunStatus, e.g.
+        # on_progress(stage="profile", detail="...", profiled=3). No-op by
+        # default so the CLI and tests need not provide one.
+        self.on_progress = lambda **kwargs: None
+
+    def _progress(self, **fields) -> None:
+        """Emit a progress update, always refreshing the live spend figure."""
+        fields.setdefault("spent_usd", round(self.meter.spent_usd, 4))
+        try:
+            self.on_progress(**fields)
+        except Exception:  # noqa: BLE001 - progress must never break a run
+            pass
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -91,10 +104,25 @@ class Pipeline:
     def run(self) -> Report:
         """Run (or resume) the scan. Raises RunHalted on budget stop."""
         try:
+            self._progress(stage="frame", detail="Planning searches")
             plan = self._stage_frame()
+
+            self._progress(stage="discover", detail="Searching and finding entities")
             candidates = self._stage_discover(plan)
+
+            self._progress(
+                stage="triage", detail=f"Ranking {len(candidates)} candidates"
+            )
             shortlist, long_tail = self._stage_triage(candidates)
+
+            self._progress(
+                stage="profile",
+                detail="Profiling and verifying entities",
+                shortlist_total=len(shortlist),
+            )
             profiled = self._stage_profile(shortlist, plan)
+
+            self._progress(stage="read", detail="Writing the overview")
             return self._stage_read(plan, profiled, long_tail)
         except BudgetExceeded as stop:
             # Everything completed so far is already on disk; the same
@@ -252,10 +280,17 @@ class Pipeline:
         for candidate in shortlist:
             if normalise(candidate.name) in done_names:
                 continue
+            self._progress(
+                stage="profile",
+                detail=f"Profiling: {candidate.name}",
+                profiled=len(done),
+                shortlist_total=len(shortlist),
+            )
             card = self._profile_one(candidate, segment_labels)
             done.append(card)
             # Persist after EVERY entity so a budget halt loses nothing.
             self.store.save_stage("profile", [c.model_dump() for c in done])
+            self._progress(profiled=len(done), shortlist_total=len(shortlist))
         return done
 
     def _profile_one(self, candidate: Candidate, segment_labels: list[str]) -> EntityCard:

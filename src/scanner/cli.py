@@ -40,13 +40,34 @@ def main(argv: list[str] | None = None) -> int:
 
     subparsers.add_parser("keys", help="Show which provider keys are configured (never shows values).")
 
+    ui_parser = subparsers.add_parser("ui", help="Launch the local web app.")
+    ui_parser.add_argument("--host", default="127.0.0.1", help="Bind host (default localhost).")
+    ui_parser.add_argument("--port", type=int, default=8000, help="Bind port (default 8000).")
+
     args = parser.parse_args(argv)
 
     if args.command == "keys":
         return _cmd_keys()
     if args.command == "run":
         return _cmd_run(args)
+    if args.command == "ui":
+        return _cmd_ui(args)
     return 2
+
+
+def _cmd_ui(args) -> int:
+    """Launch the local web app."""
+    try:
+        from .app.server import serve
+    except ImportError:
+        print(
+            "The web app needs extra packages. Install them with:\n"
+            "  pip install -e \".[app]\"",
+            file=sys.stderr,
+        )
+        return 1
+    serve(host=args.host, port=args.port)
+    return 0
 
 
 def _cmd_keys() -> int:

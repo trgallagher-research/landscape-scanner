@@ -35,10 +35,31 @@ models handle high-volume extraction; verification stays on a trusted model.
 A live cost meter (real token usage, not estimates) enforces the budget you
 set — runs halt resumably, never overspend.
 
+## Quickstart
+
+```bash
+pip install -e ".[app,pdf]"      # engine + local web UI + PDF scraping
+scanner ui                       # open http://127.0.0.1:8000
+```
+
+In the browser: add your API keys on the **Keys** screen (saved to a local,
+gitignored `.env`), type a question on the **Run** screen, watch the live
+cost on **Progress**, then browse **Results** and download a shareable
+single-file HTML report.
+
+Prefer the command line?
+
+```bash
+scanner keys                                   # show which keys are set
+scanner run --question "entrepreneurship programmes, current and past, in Kenya" \
+            --geography Kenya --budget 2.0 --out report.html
+```
+
 ## Status
 
-Under construction. Build order: core models → search/scrape → LLM layer →
-extraction/verification → pipeline → local web UI → shareable HTML reports.
+Core engine, local web UI, and shareable HTML reports are built and tested
+(offline test suite). Calibration against a hand-built gold set is the
+remaining step before fully trusting numbers on a new domain.
 
 ## Keys
 
