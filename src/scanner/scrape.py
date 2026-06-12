@@ -89,6 +89,28 @@ def html_to_text(html: str) -> str:
     return parser.text()
 
 
+def _decode_bytes(response) -> str:
+    """Decode an HTTP response body to text, preferring clean UTF-8.
+
+    Pages frequently omit or misdeclare their charset, which makes httpx's
+    automatic decode corrupt multi-byte characters (en-dashes, curly
+    quotes, currency symbols turn into replacement chars). UTF-8 covers the
+    overwhelming majority of the modern web, so we try it first and only
+    fall back to httpx's own decode if UTF-8 produced more replacement
+    characters than the fallback would.
+    """
+    raw = response.content
+    utf8 = raw.decode("utf-8", errors="replace")
+    # If a strict UTF-8 decode succeeds with few replacements, trust it.
+    if utf8.count("�") <= 3:
+        return utf8
+    # Otherwise defer to httpx's charset detection (handles legacy encodings).
+    try:
+        return response.text
+    except Exception:
+        return utf8
+
+
 def pdf_to_text(content: bytes) -> str | None:
     """Extract text from PDF bytes using PyMuPDF, if installed.
 
@@ -190,12 +212,13 @@ class Scraper:
                 return "scraped", text[: self.max_chars]
             return self._reader_fetch(url)  # reader can OCR/extract some PDFs too
 
-        # HTML (or plain text) — extract visible text.
-        text = (
-            response.text
-            if "text/plain" in content_type
-            else html_to_text(response.text)
-        )
+        # HTML (or plain text) — extract visible text. Decode defensively:
+        # many pages omit a charset or declare the wrong one, which makes
+        # httpx's .text mangle UTF-8 (e.g. an en-dash or € becomes a
+        # replacement char). Prefer a clean UTF-8 decode of the raw bytes,
+        # falling back to httpx's detected text only if that looks worse.
+        page = _decode_bytes(response)
+        text = page if "text/plain" in content_type else html_to_text(page)
         text = text.strip()
         if len(text) < 200:
             # Too little text — almost always a JavaScript-shell page that

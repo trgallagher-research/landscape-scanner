@@ -66,7 +66,7 @@ def test_truncation_caps_page_text(tmp_path, monkeypatch):
         status_code = 200
         headers = {"content-type": "text/plain"}
         text = "x" * 10_000
-        content = b""
+        content = b"x" * 10_000
 
         def raise_for_status(self):
             return None
@@ -86,7 +86,7 @@ def test_tiny_pages_count_as_unreachable(tmp_path, monkeypatch):
         status_code = 200
         headers = {"content-type": "text/html"}
         text = "<html><body>403</body></html>"
-        content = b""
+        content = b"<html><body>403</body></html>"
 
         def raise_for_status(self):
             return None
@@ -107,7 +107,7 @@ def test_reader_fallback_recovers_js_shell_page(tmp_path, monkeypatch):
         status_code = 200
         headers = {"content-type": "text/html"}
         text = "<html><body><div id='root'></div></body></html>"  # JS shell, no content
-        content = b""
+        content = text.encode("utf-8")
 
         def raise_for_status(self):
             return None
@@ -116,7 +116,7 @@ def test_reader_fallback_recovers_js_shell_page(tmp_path, monkeypatch):
         status_code = 200
         headers = {"content-type": "text/plain"}
         text = "GrowthAfrica is a Nairobi-based accelerator " * 20  # rendered content
-        content = b""
+        content = text.encode("utf-8")
 
         def raise_for_status(self):
             return None
@@ -144,6 +144,30 @@ def test_reader_disabled_gives_up_on_blocked_page(tmp_path, monkeypatch):
     status, text = scraper.fetch("https://blocked.example.org")
     assert status == "unreachable"
     assert text is None
+
+
+def test_utf8_page_decoded_cleanly(tmp_path, monkeypatch):
+    """A UTF-8 page whose charset httpx would misdetect must still decode
+    cleanly — no replacement chars for en-dashes, euros, curly quotes."""
+    scraper = Scraper(cache_dir=tmp_path, reader_enabled=False)
+    real_text = "The programme ran 2023–24 and awarded €10,000 to winners. " * 10
+
+    class FakeResponse:
+        status_code = 200
+        headers = {"content-type": "text/html"}  # note: no charset declared
+        content = ("<html><body><p>" + real_text + "</p></body></html>").encode("utf-8")
+        # Simulate httpx mis-decoding as latin-1 (the mojibake we saw live).
+        text = content.decode("latin-1")
+
+        def raise_for_status(self):
+            return None
+
+    monkeypatch.setattr("scanner.scrape.httpx.get", lambda *a, **k: FakeResponse())
+    status, text = scraper.fetch("https://example.org/utf8")
+    assert status == "scraped"
+    assert "€10,000" in text       # euro sign intact
+    assert "2023–24" in text       # en-dash intact
+    assert "�" not in text         # no replacement chars
 
 
 def test_cache_key_is_stable_and_filename_safe():
