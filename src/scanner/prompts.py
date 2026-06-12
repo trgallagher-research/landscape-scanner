@@ -249,14 +249,20 @@ class ReadOutput(BaseModel):
     segment_descriptions: dict[str, str] = Field(default_factory=dict)
 
 
-def read_prompt(question: str, entities_block: str) -> str:
+def read_prompt(question: str, entities_block: str, long_tail_note: str = "") -> str:
     return (
         f"Research question: {question}\n\n"
         f"Verified landscape data (entity, segment, confidence, key verified "
         f"features):\n{entities_block}\n\n"
+        f"{long_tail_note}"
         f"Write the executive read: a one-sentence headline; the key players "
         f"(highest-confidence, most substantial entities); areas where many "
         f"entities crowd; and the gaps — segments or needs with little or "
         f"nothing in them, INCLUDING systematic absences (e.g. outcome data "
-        f"rarely published). Name only entities from the data above."
+        f"rarely published). Name only entities from the data above. "
+        f"IMPORTANT: gaps must describe what is missing from the VERIFIED DATA "
+        f"shown, framed as 'no verified data on...' — do NOT claim a type of "
+        f"programme does not exist in the world, especially any already listed "
+        f"among the additional entities below, which were found but not yet "
+        f"deep-profiled."
     )

@@ -177,6 +177,62 @@ def test_resume_skips_completed_stages(tmp_path):
     assert first_run_calls["frame"] == 1
 
 
+def test_grounded_claims_prevent_false_quarantine(tmp_path):
+    """Regression: an entity whose full name is not a verbatim substring of
+    the source must NOT be quarantined when its claims still ground. The
+    live run found 'Women's Social Entrepreneurship Initiative (WSEI)' with
+    8/8 features verified yet wrongly marked 'existence NOT verified' because
+    only the exact long name was sought in the page."""
+    config = RunConfig(question="programmes in Kenya", shortlist_size=1, scrape_pages_per_entity=1)
+    router = StubRouter()
+    # Page never contains the full candidate name verbatim, only "WSEI",
+    # but it does contain the claim text the profile asserts.
+    page = "WSEI was launched in January 2023 and supported 25 women entrepreneurs."
+
+    class NameVariantRouter(StubRouter):
+        def call_json(self, task, system, prompt, schema, max_tokens=8192):
+            if task == "extract_entities":
+                return prompts.ExtractOutput(entities=[
+                    prompts.ExtractedEntity(
+                        name="Women's Social Entrepreneurship Initiative (WSEI)",
+                        source_urls=["https://wsei.example.org/about"],
+                    )
+                ])
+            if task == "triage":
+                return prompts.TriageOutput(scores=[
+                    prompts.TriageScore(name="Women's Social Entrepreneurship Initiative (WSEI)", relevance=9)
+                ])
+            if task == "span_discovery":
+                return prompts.SpanOutput(spans=[prompts.Span(text="launched in January 2023", kind="date")])
+            if task == "attribute_population":
+                return prompts.PopulateOutput(
+                    one_liner="A women's entrepreneurship initiative.",
+                    form="initiative", segment="Finance",
+                    features=[prompts.PopulatedFeature(label="Launch", text="launched in January 2023")],
+                )
+            return super().call_json(task, system, prompt, schema, max_tokens)
+
+    class WseiSearchProvider(SearchProvider):
+        name = "serper"
+
+        def search(self, query, max_results=10):
+            return [SearchHit(
+                url="https://wsei.example.org/about",
+                title="WSEI", snippet="Women's entrepreneurship in Mombasa", index=self.name,
+            )]
+
+    router = NameVariantRouter()
+    search = MultiSearch([WseiSearchProvider()])
+    store = RunStore(tmp_path / "runs", "wsei-run")
+    pipeline = Pipeline(config, router, search, store, router.meter)
+    pipeline.scraper._fetch_uncached = lambda url: ("scraped", page)
+
+    report = pipeline.run()
+    wsei = report.entities[0]
+    assert wsei.features[0].verdict == "verified"   # the claim grounds
+    assert wsei.quarantined is False                # so existence holds despite name mismatch
+
+
 def test_unreachable_only_entity_is_quarantined(tmp_path):
     """An entity whose sources all fail to fetch is quarantined with an
     honest basis — not dropped, not faked."""

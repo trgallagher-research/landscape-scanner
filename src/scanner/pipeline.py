@@ -340,11 +340,17 @@ class Pipeline:
             features.append(verify_claim(claim, usable, relation_checker))
 
         # -- existence + confidence -----------------------------------------
-        exists = any(
+        verified_count = sum(1 for f in features if f.verdict == "verified")
+        # Existence holds if at least one claim about the entity grounded to a
+        # real source span (the v1 rule), OR the entity name appears verbatim
+        # in a scraped source. The claim test is primary: a name that varies
+        # in phrasing ("WSEI" vs its full title) must not quarantine an entity
+        # whose facts are demonstrably sourced.
+        name_in_source = any(
             normalise(candidate.name) in normalise(source.full_text or "")
             for source in usable
         )
-        verified_count = sum(1 for f in features if f.verdict == "verified")
+        exists = verified_count >= 1 or name_in_source
         cross_index = len(candidate.indexes) >= 2
         confidence = self._confidence(exists, verified_count, len(features), cross_index)
 
@@ -455,10 +461,23 @@ class Pipeline:
                 f"- {card.name} [{card.segment or 'unsegmented'}, "
                 f"confidence {card.confidence.level}] {verified}"
             )
+        # Make the read aware of the long tail so it never claims a category
+        # is absent from the world when examples are sitting unprofiled.
+        long_tail_note = ""
+        if long_tail_candidates:
+            sample = ", ".join(c.name for c in long_tail_candidates[:30])
+            long_tail_note = (
+                f"Additional entities found but NOT deep-profiled "
+                f"({len(long_tail_candidates)} total, sample): {sample}\n\n"
+            )
         read = self.router.call_json(
             "read",
             prompts.READ_SYSTEM,
-            prompts.read_prompt(self.config.question, "\n".join(lines) or "(none verified)"),
+            prompts.read_prompt(
+                self.config.question,
+                "\n".join(lines) or "(none verified)",
+                long_tail_note,
+            ),
             prompts.ReadOutput,
         )
 
