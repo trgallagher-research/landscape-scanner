@@ -78,9 +78,9 @@ def test_truncation_caps_page_text(tmp_path, monkeypatch):
 
 
 def test_tiny_pages_count_as_unreachable(tmp_path, monkeypatch):
-    """A near-empty page (bot wall / JS shell) can't ground claims —
-    honest answer is 'unreachable', not a fake success."""
-    scraper = Scraper(cache_dir=tmp_path)
+    """A near-empty page (bot wall / JS shell) with the reader disabled is
+    honestly 'unreachable', not a fake success."""
+    scraper = Scraper(cache_dir=tmp_path, reader_enabled=False)
 
     class FakeResponse:
         status_code = 200
@@ -92,6 +92,55 @@ def test_tiny_pages_count_as_unreachable(tmp_path, monkeypatch):
             return None
 
     monkeypatch.setattr("scanner.scrape.httpx.get", lambda *a, **k: FakeResponse())
+    status, text = scraper.fetch("https://blocked.example.org")
+    assert status == "unreachable"
+    assert text is None
+
+
+def test_reader_fallback_recovers_js_shell_page(tmp_path, monkeypatch):
+    """When the plain GET returns an empty JS shell, the reader tier renders
+    the page and recovers its text — turning an 'unreachable' into a
+    'scraped'."""
+    scraper = Scraper(cache_dir=tmp_path, reader_enabled=True)
+
+    class ShellResponse:
+        status_code = 200
+        headers = {"content-type": "text/html"}
+        text = "<html><body><div id='root'></div></body></html>"  # JS shell, no content
+        content = b""
+
+        def raise_for_status(self):
+            return None
+
+    class ReaderResponse:
+        status_code = 200
+        headers = {"content-type": "text/plain"}
+        text = "GrowthAfrica is a Nairobi-based accelerator " * 20  # rendered content
+        content = b""
+
+        def raise_for_status(self):
+            return None
+
+    def fake_get(url, *a, **k):
+        # The reader URL is the target prefixed with the reader host.
+        return ReaderResponse() if url.startswith("https://r.jina.ai/") else ShellResponse()
+
+    monkeypatch.setattr("scanner.scrape.httpx.get", fake_get)
+    status, text = scraper.fetch("https://growthafrica.com")
+    assert status == "scraped"
+    assert "GrowthAfrica" in text
+
+
+def test_reader_disabled_gives_up_on_blocked_page(tmp_path, monkeypatch):
+    """With the reader off, a hard 403 stays unreachable (no second attempt)."""
+    import httpx
+
+    scraper = Scraper(cache_dir=tmp_path, reader_enabled=False)
+
+    def raising_get(*a, **k):
+        raise httpx.HTTPError("403 Forbidden")
+
+    monkeypatch.setattr("scanner.scrape.httpx.get", raising_get)
     status, text = scraper.fetch("https://blocked.example.org")
     assert status == "unreachable"
     assert text is None

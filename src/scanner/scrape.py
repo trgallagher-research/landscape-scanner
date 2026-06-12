@@ -116,7 +116,13 @@ def url_cache_key(url: str) -> str:
 class Scraper:
     """Fetches full text for URLs with a per-URL JSON cache on disk."""
 
-    def __init__(self, cache_dir: Path, timeout_s: float = 20.0, max_chars: int = 15000):
+    def __init__(
+        self,
+        cache_dir: Path,
+        timeout_s: float = 20.0,
+        max_chars: int = 15000,
+        reader_enabled: bool = True,
+    ):
         """
         Parameters
         ----------
@@ -128,11 +134,16 @@ class Scraper:
             Truncation cap applied to extracted text. Long pages dominate
             LLM input cost; 15k characters keeps the substance and cuts
             the tail.
+        reader_enabled:
+            Whether to use the reader-service fallback (rung 3) for pages a
+            plain GET can't read. On by default; disable in tests to keep
+            them fully offline.
         """
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.timeout_s = timeout_s
         self.max_chars = max_chars
+        self.reader_enabled = reader_enabled
 
     def fetch(self, url: str) -> tuple[ScrapeStatus, str | None]:
         """Fetch one URL's text: cache first, then the ladder.
@@ -156,6 +167,7 @@ class Scraper:
 
     def _fetch_uncached(self, url: str) -> tuple[ScrapeStatus, str | None]:
         """Run the fetch ladder for one URL."""
+        # Rung 1: plain HTTP GET.
         try:
             response = httpx.get(
                 url,
@@ -165,7 +177,9 @@ class Scraper:
             )
             response.raise_for_status()
         except httpx.HTTPError:
-            return "unreachable", None
+            # The site blocked us or errored (403/429/timeout). Don't give up
+            # yet — the reader tier (rung 3) renders many of these.
+            return self._reader_fetch(url)
 
         content_type = response.headers.get("content-type", "").lower()
 
@@ -174,9 +188,9 @@ class Scraper:
             text = pdf_to_text(response.content)
             if text:
                 return "scraped", text[: self.max_chars]
-            return "unreachable", None  # PDF we couldn't parse
+            return self._reader_fetch(url)  # reader can OCR/extract some PDFs too
 
-        # Rung 1/3: HTML (or plain text) — extract visible text.
+        # HTML (or plain text) — extract visible text.
         text = (
             response.text
             if "text/plain" in content_type
@@ -184,8 +198,37 @@ class Scraper:
         )
         text = text.strip()
         if len(text) < 200:
-            # Too little text to verify anything against — treat as a failed
-            # fetch (likely a bot wall or a JavaScript-only shell page).
+            # Too little text — almost always a JavaScript-shell page that
+            # renders its content client-side, or a bot wall. The reader
+            # tier renders the page server-side and usually recovers it.
+            return self._reader_fetch(url)
+        return "scraped", text[: self.max_chars]
+
+    def _reader_fetch(self, url: str) -> tuple[ScrapeStatus, str | None]:
+        """Rung 3: a reader service that renders JS and bypasses most bot
+        walls, returning clean text. Uses Jina Reader (https://r.jina.ai/),
+        which is free, keyless, and needs no extra dependency — we just
+        prefix the target URL and fetch the rendered text.
+
+        This is the single biggest scrape-recovery lever for modern sites
+        (React/Vue shells, 403/429 bot blocks). If it also fails, the
+        source is honestly ``unreachable``.
+        """
+        if not self.reader_enabled:
+            return "unreachable", None
+        try:
+            reader_url = "https://r.jina.ai/" + url
+            response = httpx.get(
+                reader_url,
+                headers={"User-Agent": DEFAULT_HEADERS["User-Agent"]},
+                timeout=self.timeout_s + 15,  # rendering takes longer than a raw GET
+                follow_redirects=True,
+            )
+            response.raise_for_status()
+        except httpx.HTTPError:
+            return "unreachable", None
+        text = response.text.strip()
+        if len(text) < 200:
             return "unreachable", None
         return "scraped", text[: self.max_chars]
 
