@@ -26,6 +26,11 @@ htmlcov/
 # --- Scanner run state (local artifacts, can be large) ---
 runs/
 
+# --- Generated reports (a specific scan's output, not source) ---
+*landscape*.html
+*_report.html
+report.html
+
 # --- OS noise ---
 .DS_Store
 Thumbs.db
