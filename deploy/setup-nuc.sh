@@ -21,17 +21,34 @@ cd "${REPO_ROOT}"
 
 echo "==> Setting up Landscape Scanner in: ${REPO_ROOT}"
 
-# Pick a Python interpreter (prefer python3).
-if command -v python3 >/dev/null 2>&1; then
-    PYTHON=python3
-elif command -v python >/dev/null 2>&1; then
-    PYTHON=python
-else
-    echo "ERROR: no python3/python found on PATH. Install Python 3.10+ first." >&2
+# Pick a Python interpreter. The app requires Python 3.10+ (it uses
+# `str | None` unions and builtin generics). Prefer the newest available,
+# and fail clearly if only an older one is present.
+PYTHON=""
+for candidate in python3.13 python3.12 python3.11 python3.10 python3 python; do
+    if command -v "${candidate}" >/dev/null 2>&1; then
+        version="$("${candidate}" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || echo "0.0")"
+        major="${version%.*}"
+        minor="${version#*.}"
+        if [ "${major}" = "3" ] && [ "${minor}" -ge 10 ] 2>/dev/null; then
+            PYTHON="${candidate}"
+            break
+        fi
+    fi
+done
+
+if [ -z "${PYTHON}" ]; then
+    echo "ERROR: need Python 3.10 or newer, but none was found on PATH." >&2
+    echo "" >&2
+    echo "On Ubuntu 20.04 (which ships Python 3.8), install a newer Python:" >&2
+    echo "    sudo apt update && sudo apt install -y software-properties-common" >&2
+    echo "    sudo add-apt-repository -y ppa:deadsnakes/ppa" >&2
+    echo "    sudo apt update && sudo apt install -y python3.11 python3.11-venv" >&2
+    echo "Then re-run this script." >&2
     exit 1
 fi
 
-echo "==> Using interpreter: $(${PYTHON} --version 2>&1)"
+echo "==> Using interpreter: $(${PYTHON} --version 2>&1)  (${PYTHON})"
 
 # Create the virtual environment if it does not already exist.
 if [ ! -d ".venv" ]; then
