@@ -8,27 +8,42 @@ body so the on-screen view and the downloadable file look identical.
 from __future__ import annotations
 
 import html
+import socket
 
 from ..keys import KNOWN_PROVIDERS
 from ..models import Report
 from ..report_html import render_html
 from .runner import STAGE_LABELS, STAGE_ORDER, RunStatus
 
-_NAV = """
+# The machine this server is running on. Shown in the nav so you can always
+# tell WHICH instance you're looking at — the NUC (through an SSH tunnel) and
+# a local copy would both appear at http://localhost:8000, so the URL alone
+# can't distinguish them. The hostname can.
+_HOSTNAME = socket.gethostname()
+
+_NAV = f"""
 <nav class="nav">
-  <a href="/">Run</a>
-  <a href="/progress">Progress</a>
-  <a href="/results">Results</a>
-  <a href="/keys">Keys</a>
+  <div class="nav-links">
+    <a href="/">Run</a>
+    <a href="/progress">Progress</a>
+    <a href="/results">Results</a>
+    <a href="/keys">Keys</a>
+  </div>
+  <div class="nav-host" title="the machine this scanner is running on">
+    running on: <strong>{html.escape(_HOSTNAME)}</strong>
+  </div>
 </nav>
 """
 
 _STYLE = """
 body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; margin: 0;
        background: #f6f8fa; color: #1f2328; }
-.nav { background: #1f2328; padding: 10px 20px; }
+.nav { background: #1f2328; padding: 10px 20px; display: flex;
+       align-items: center; justify-content: space-between; }
 .nav a { color: #d1d9e0; margin-right: 18px; text-decoration: none; font-size: 0.95rem; }
 .nav a:hover { color: #fff; }
+.nav-host { color: #9aa7b1; font-size: 0.82rem; }
+.nav-host strong { color: #58a6ff; }
 .wrap { max-width: 860px; margin: 0 auto; padding: 24px 18px 60px; }
 h1 { font-size: 1.5rem; }
 label { display: block; margin: 14px 0 4px; font-weight: 600; font-size: 0.92rem; }
