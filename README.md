@@ -55,6 +55,88 @@ scanner run --question "entrepreneurship programmes, current and past, in Kenya"
             --geography Kenya --budget 2.0 --out report.html
 ```
 
+## Security & sharing
+
+This repository is public, but **it contains no secrets**. Your API keys live
+only in a local `.env` file (gitignored) or environment variables on the
+machine that runs the tool. The web UI shows each key as *set* or *missing* —
+it never displays or transmits the key value.
+
+Two things are worth keeping straight:
+
+- **Exposed** (the key value leaks) — protected. The UI never reveals keys,
+  and they are never committed.
+- **Usable** (someone makes the app *spend* your keys without seeing them) —
+  this is the risk to manage. The app has **no login**, so anyone who can
+  reach a running instance can run scans that spend your credits, even though
+  they never see the key itself.
+
+The design therefore keeps the app **local-first**:
+
+- `scanner ui` binds to `127.0.0.1` (localhost) only. It is not on the
+  network and not on the internet; only the machine running it can reach it.
+  The `http://127.0.0.1:8000` address always means "this computer" — it is
+  not a shareable link.
+- **Share results, not access.** Hand colleagues the downloaded single-file
+  HTML report (open in any browser, email-able). It carries the findings and
+  the full audit trail, and spends none of your credits when they open it.
+- **If a colleague wants to run their own scans**, they clone this public
+  repo and use *their own* keys on *their own* machine. Nobody spends anyone
+  else's credits.
+
+Do **not** bind the app to `0.0.0.0` or port-forward it to the internet
+unless you add authentication first — that would let anyone who finds it
+spend your keys.
+
+## Running on a home server (e.g. an Intel NUC) over SSH
+
+You can run the scanner on an always-on box you SSH into, and reach the UI
+from your laptop **without exposing it to the network** — by keeping it bound
+to localhost on the server and tunnelling over SSH. The trust boundary stays
+exactly "who can SSH into the box".
+
+**1. One-time setup on the NUC** (assumes Linux; see `deploy/setup-nuc.sh`):
+
+```bash
+ssh you@nuc
+git clone https://github.com/trgallagher-research/landscape-scanner.git
+cd landscape-scanner
+bash deploy/setup-nuc.sh          # makes a venv and installs the app
+```
+
+**2. Add your keys on the NUC** (kept in its local, gitignored `.env`):
+
+```bash
+nano .env        # add SERPER_API_KEY=... etc. (see the Keys section)
+```
+
+**3. Run it, bound to localhost only:**
+
+```bash
+.venv/bin/scanner ui --host 127.0.0.1 --port 8000
+```
+
+To keep it running after you log out, install it as a service (auto-starts on
+boot, restarts on crash) — see `deploy/landscape-scanner.service`:
+
+```bash
+# edit the User= and WorkingDirectory= lines first, then:
+sudo cp deploy/landscape-scanner.service /etc/systemd/system/
+sudo systemctl enable --now landscape-scanner
+```
+
+**4. From your laptop, open an SSH tunnel and browse it:**
+
+```bash
+ssh -N -L 8000:127.0.0.1:8000 you@nuc
+# leave that running, then open http://localhost:8000 in your laptop's browser
+```
+
+The UI now appears in your laptop's browser, but the only way in is through
+your authenticated SSH connection — nobody else on the network or the
+internet can reach it or spend your keys. (On Windows, the same
+`ssh -N -L ...` command works in PowerShell.)
+
 ## Status
 
 Core engine, local web UI, and shareable HTML reports are built and tested

@@ -1,0 +1,46 @@
+# systemd service for running Landscape Scanner on a Linux home server.
+#
+# This keeps the web UI running after you log out, and restarts it if it
+# crashes or the machine reboots. It binds to localhost ONLY — you reach it
+# from your laptop over an SSH tunnel (see the README), so it is never
+# exposed to the network.
+#
+# Install:
+#   1. Edit the two lines marked CHANGE ME below (your username + the path
+#      to where you cloned the repo).
+#   2. sudo cp deploy/landscape-scanner.service /etc/systemd/system/
+#   3. sudo systemctl daemon-reload
+#   4. sudo systemctl enable --now landscape-scanner
+#
+# Check it:   systemctl status landscape-scanner
+# Logs:       journalctl -u landscape-scanner -f
+# Stop:       sudo systemctl stop landscape-scanner
+
+[Unit]
+Description=Landscape Scanner web UI (localhost only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# CHANGE ME: the user account that owns the cloned repo and the .env file.
+User=YOUR_USERNAME
+
+# CHANGE ME: the absolute path to the cloned repository.
+WorkingDirectory=/home/YOUR_USERNAME/landscape-scanner
+
+# Bind to localhost only. Do NOT change 127.0.0.1 to 0.0.0.0 — that would
+# expose the key-spending app to the whole network with no login.
+ExecStart=/home/YOUR_USERNAME/landscape-scanner/.venv/bin/scanner ui --host 127.0.0.1 --port 8000
+
+# Keys are read from the repo's local .env via the app itself; systemd does
+# not need to load them. Restart automatically on failure.
+Restart=on-failure
+RestartSec=5
+
+# Light hardening: the service cannot write outside its own directory tree
+# except the run cache it needs.
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
