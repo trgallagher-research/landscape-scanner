@@ -14,7 +14,11 @@ pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
 from scanner.app import api  # noqa: E402
-from scanner.app.runner import MultiRunManager, RunStatus  # noqa: E402
+from scanner.app.runner import (  # noqa: E402
+    MultiRunManager,
+    RunStatus,
+    TooManyConcurrentRuns,
+)
 from scanner.models import (  # noqa: E402
     CostSummary,
     Overview,
@@ -107,6 +111,15 @@ def test_start_scan_rejects_missing_keys(client, monkeypatch):
     r = client.post("/scans", json={"question": "q"})
     assert r.status_code == 400
     assert "serper" in r.json()["detail"].lower()
+
+
+def test_start_scan_429_when_at_capacity(client, monkeypatch):
+    def at_capacity(config, keys):
+        raise TooManyConcurrentRuns("full")
+
+    monkeypatch.setattr(api.manager, "start", at_capacity)
+    r = client.post("/scans", json={"question": "q"})
+    assert r.status_code == 429
 
 
 def test_status_404_for_unknown_run(client):
@@ -209,6 +222,51 @@ def test_manager_runs_concurrently_with_distinct_ids(monkeypatch, tmp_path):
         mgr._threads[run_id].join(timeout=5)
         assert mgr.get(run_id).state == "done"
         assert mgr.get(run_id).report is not None
+
+
+def test_manager_enforces_concurrency_cap(monkeypatch, tmp_path):
+    import threading as _threading
+
+    release = _threading.Event()
+
+    class BlockingPipeline:
+        def __init__(self, config, runs_dir, run_id):
+            self.config = config
+            self.on_progress = lambda **k: None
+            self.meter = types.SimpleNamespace(spent_usd=0.0)
+            self._runs_dir = runs_dir
+            self._run_id = run_id
+
+        def run(self):
+            release.wait(timeout=5)  # hold the thread "running" until released
+            from scanner.state import RunStore
+
+            report = _report(self.config.question)
+            RunStore(self._runs_dir, self._run_id).save_stage("report", report.model_dump())
+            return report
+
+    import scanner.pipeline as pipeline_mod
+
+    monkeypatch.setattr(
+        pipeline_mod,
+        "build_pipeline",
+        lambda config, keys, runs_dir, run_id=None: BlockingPipeline(
+            config, runs_dir, run_id or "x"
+        ),
+    )
+
+    mgr = MultiRunManager(tmp_path, max_concurrent=1)
+    s1 = mgr.start(RunConfig(question="one"), keys=None)
+    # Second start is rejected while the first is still running.
+    with pytest.raises(TooManyConcurrentRuns):
+        mgr.start(RunConfig(question="two"), keys=None)
+
+    release.set()
+    mgr._threads[s1.run_id].join(timeout=5)
+    # A slot freed up — a new run is accepted again.
+    s3 = mgr.start(RunConfig(question="three"), keys=None)
+    mgr._threads[s3.run_id].join(timeout=5)
+    assert mgr.get(s3.run_id).state == "done"
 
 
 def test_manager_reloads_report_from_disk(monkeypatch, tmp_path):

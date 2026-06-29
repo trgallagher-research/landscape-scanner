@@ -33,7 +33,7 @@ from pydantic import BaseModel
 
 from ..keys import KNOWN_PROVIDERS, ProviderKeys
 from ..models import RunConfig
-from .runner import MultiRunManager
+from .runner import MultiRunManager, TooManyConcurrentRuns
 
 # Where runs are stored (cwd/runs), shared with the CLI and local UI.
 RUNS_DIR = Path("runs")
@@ -137,7 +137,10 @@ def start_scan(req: StartScanRequest) -> dict:
         budget_usd=_clamp_budget(req.budget_usd),
         model_profile=_profile(req.model_profile),
     )
-    status = manager.start(config, keys)
+    try:
+        status = manager.start(config, keys)
+    except TooManyConcurrentRuns as full:
+        raise HTTPException(status_code=429, detail=str(full))
     return {"run_id": status.run_id, "state": status.state}
 
 

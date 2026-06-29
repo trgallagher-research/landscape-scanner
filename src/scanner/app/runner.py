@@ -11,12 +11,21 @@ tool, and serialising keeps the budget meter and cost readout unambiguous.
 
 from __future__ import annotations
 
+import os
 import threading
 import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..models import Report, RunConfig
+
+
+class TooManyConcurrentRuns(RuntimeError):
+    """Raised by MultiRunManager.start when the concurrent-run cap is reached.
+
+    Scans are minutes-long and spend real API budget, so the hosted API caps how
+    many run at once on this process — the hard backstop against a runaway client
+    or a costly thundering herd. The web layer surfaces this as HTTP 429."""
 
 
 @dataclass
@@ -146,28 +155,49 @@ class MultiRunManager:
     id. Runs still persist to ``runs/<run_id>/`` on disk, so a finished report can be
     reloaded after a process restart even if it's no longer in the registry."""
 
-    def __init__(self, runs_dir: Path):
+    def __init__(self, runs_dir: Path, max_concurrent: int | None = None):
         self.runs_dir = runs_dir
+        # Hard cap on simultaneously-running scans. Env-tunable; defaults to 3.
+        self.max_concurrent = (
+            max_concurrent
+            if max_concurrent is not None
+            else int(os.environ.get("SCANNER_MAX_CONCURRENT_RUNS", "3"))
+        )
         self._runs: dict[str, RunStatus] = {}
         self._threads: dict[str, threading.Thread] = {}
         self._lock = threading.Lock()
 
+    def active_count(self) -> int:
+        """How many runs are currently executing (live threads)."""
+        with self._lock:
+            return sum(1 for t in self._threads.values() if t.is_alive())
+
     def start(self, config: RunConfig, keys) -> RunStatus:
-        """Begin a scan in the background and return its status (with the run id)."""
+        """Begin a scan in the background and return its status (with the run id).
+
+        Raises TooManyConcurrentRuns if the concurrency cap is already reached."""
         run_id = make_unique_run_id(config.question)
         status = RunStatus(
             run_id=run_id,
             question=config.question,
             budget_usd=config.budget_usd,
         )
-        with self._lock:
-            self._runs[run_id] = status
         thread = threading.Thread(
             target=_drive_pipeline,
             args=(status, config, keys, self.runs_dir, run_id, self._update),
             daemon=True,
         )
-        self._threads[run_id] = thread
+        # Count live threads and register the new run atomically, so two requests
+        # racing at the limit can't both slip through.
+        with self._lock:
+            active = sum(1 for t in self._threads.values() if t.is_alive())
+            if active >= self.max_concurrent:
+                raise TooManyConcurrentRuns(
+                    f"At capacity: {active} scans already running "
+                    f"(max {self.max_concurrent}). Try again once one finishes."
+                )
+            self._runs[run_id] = status
+            self._threads[run_id] = thread
         thread.start()
         return status
 
