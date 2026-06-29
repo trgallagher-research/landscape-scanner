@@ -22,6 +22,7 @@ needs no token. Set it in any real deployment.
 
 from __future__ import annotations
 
+import math
 import os
 import secrets
 from pathlib import Path
@@ -91,8 +92,26 @@ def _resolve_keys(keys: Optional[ScanKeys]) -> ProviderKeys:
 
 
 def _profile(value: str) -> str:
-    """Map the contract's model_profile onto the engine's two profiles."""
+    """Map the contract's model_profile onto the engine's two profiles.
+
+    Anything outside the two known profiles (including the contract's documented
+    default, ``"default"``) deliberately resolves to the cheaper ``economy``."""
     return value if value in ("economy", "quality") else "economy"
+
+
+# Server-side per-scan spend ceiling. The website clamps too, but the engine must
+# not trust the caller: the bearer is only defence-in-depth (Cloudflare Access is
+# the primary gate), so a request that slips past both must still not be able to
+# drain a key with an arbitrary budget. Configurable via SCANNER_MAX_BUDGET_USD.
+DEFAULT_BUDGET_USD = 2.0
+
+
+def _clamp_budget(value: float) -> float:
+    """Clamp a requested budget to a sane, server-enforced range."""
+    cap = float(os.environ.get("SCANNER_MAX_BUDGET_USD", "5"))
+    if not math.isfinite(value) or value <= 0:
+        value = DEFAULT_BUDGET_USD
+    return min(value, cap)
 
 
 # --- Routes -----------------------------------------------------------------
@@ -115,7 +134,7 @@ def start_scan(req: StartScanRequest) -> dict:
 
     config = RunConfig(
         question=question,
-        budget_usd=req.budget_usd,
+        budget_usd=_clamp_budget(req.budget_usd),
         model_profile=_profile(req.model_profile),
     )
     status = manager.start(config, keys)
@@ -127,7 +146,12 @@ def scan_status(run_id: str) -> dict:
     """The live status snapshot for a run (mirrors RunStatus)."""
     status = manager.get(run_id)
     if status is None:
-        raise HTTPException(status_code=404, detail="Unknown run")
+        # Not held in memory. It may be a run that finished before a restart, or
+        # one a restart interrupted mid-flight. Resolve it from disk so a polling
+        # client reaches a terminal state instead of seeing a 404 forever.
+        status = manager.recover_status(run_id)
+        if status is None:
+            raise HTTPException(status_code=404, detail="Unknown run")
     return {
         "run_id": status.run_id,
         "question": status.question,
@@ -163,6 +187,30 @@ def scan_report(run_id: str) -> dict:
     raise HTTPException(status_code=409, detail=f"No report available ({status.state})")
 
 
+def _serve_preflight(host: str) -> Optional[str]:
+    """Validate the serving configuration before launch (pure, so it's testable).
+
+    Raises SystemExit on an unsafe config: serving on a non-local interface with
+    no ``SCANNER_SERVICE_TOKEN`` set would leave the API with no app-level auth
+    (Cloudflare Access is optional in the contract), so anyone who reached it
+    could spend the owner's keys. Returns a warning string for safe-but-notable
+    configs (no token, but bound to localhost), or None when all is well."""
+    token = os.environ.get("SCANNER_SERVICE_TOKEN")
+    is_local = host in ("127.0.0.1", "localhost", "::1")
+    if not token and not is_local:
+        raise SystemExit(
+            f"Refusing to serve on '{host}' without SCANNER_SERVICE_TOKEN set: "
+            "the API would have no app-level auth. Set the token (defence-in-depth "
+            "behind Cloudflare Access), or bind 127.0.0.1 and reach it via the tunnel."
+        )
+    if not token:
+        return (
+            "SCANNER_SERVICE_TOKEN is not set — the API has no app-level auth. "
+            "Fine for localhost; set it before exposing this via a tunnel."
+        )
+    return None
+
+
 def serve_api(host: str = "127.0.0.1", port: int = 8000) -> None:
     """Launch the hosted JSON API with uvicorn (used by ``scanner serve-api``).
 
@@ -170,5 +218,8 @@ def serve_api(host: str = "127.0.0.1", port: int = 8000) -> None:
     there is no need to bind a public interface."""
     import uvicorn
 
+    warning = _serve_preflight(host)
+    if warning:
+        print(f"WARNING: {warning}")
     print(f"Landscape Scanner API: http://{host}:{port}")
     uvicorn.run(app, host=host, port=port, log_level="warning")

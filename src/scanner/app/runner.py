@@ -175,6 +175,35 @@ class MultiRunManager:
         """The live status for a run, or None if this process never started it."""
         return self._runs.get(run_id)
 
+    def recover_status(self, run_id: str) -> RunStatus | None:
+        """Best-effort status for a run this process doesn't hold in memory.
+
+        After a restart the in-memory registry is empty, but runs persist to
+        ``runs/<run_id>/``. If a finished report is on disk, report it as ``done``;
+        if the directory exists but never produced a report, the run was
+        interrupted (e.g. the service restarted mid-scan) — report it as ``error``
+        so a polling client stops instead of waiting forever. None if truly unknown."""
+        if not (self.runs_dir / run_id).is_dir():
+            return None
+        report = self.load_report(run_id)
+        if report is not None:
+            return RunStatus(
+                run_id=run_id,
+                question=report.run_config.question,
+                state="done",
+                stage="read",
+                detail="Scan complete.",
+                spent_usd=report.cost.total_usd,
+                budget_usd=report.run_config.budget_usd,
+                report=report,
+            )
+        return RunStatus(
+            run_id=run_id,
+            question="",
+            state="error",
+            error="The scan was interrupted by a service restart and did not finish.",
+        )
+
     def load_report(self, run_id: str):
         """Reload a finished report from disk for a run not held in memory (e.g.
         after a process restart). Returns a Report, or None if absent."""

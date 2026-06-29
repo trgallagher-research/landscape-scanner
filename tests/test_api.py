@@ -60,6 +60,10 @@ class StubManager:
     def load_report(self, run_id):
         return _report() if run_id == "ondisk-1" else None
 
+    def recover_status(self, run_id):
+        # The stub holds everything in memory, so disk recovery never finds a run.
+        return None
+
 
 @pytest.fixture
 def client(monkeypatch):
@@ -81,6 +85,19 @@ def test_start_scan_returns_run_id(client):
 def test_start_scan_requires_question(client):
     r = client.post("/scans", json={"question": "   "})
     assert r.status_code == 400
+
+
+def test_budget_is_clamped_server_side(client, monkeypatch):
+    monkeypatch.setenv("SCANNER_MAX_BUDGET_USD", "5")
+    client.post("/scans", json={"question": "q", "budget_usd": 1000})
+    config, _ = api.manager.started[-1]
+    assert config.budget_usd == 5.0  # clamped down to the server ceiling
+
+
+def test_budget_invalid_falls_back_to_default(client):
+    client.post("/scans", json={"question": "q", "budget_usd": -3})
+    config, _ = api.manager.started[-1]
+    assert config.budget_usd == api.DEFAULT_BUDGET_USD
 
 
 def test_start_scan_rejects_missing_keys(client, monkeypatch):
@@ -133,6 +150,22 @@ def test_token_required_when_configured(client, monkeypatch):
 def test_no_token_needed_when_unset(client, monkeypatch):
     monkeypatch.delenv("SCANNER_SERVICE_TOKEN", raising=False)
     assert client.get("/scans/rid-1").status_code == 200
+
+
+def test_serve_preflight_refuses_public_host_without_token(monkeypatch):
+    monkeypatch.delenv("SCANNER_SERVICE_TOKEN", raising=False)
+    with pytest.raises(SystemExit):
+        api._serve_preflight("0.0.0.0")
+
+
+def test_serve_preflight_warns_on_localhost_without_token(monkeypatch):
+    monkeypatch.delenv("SCANNER_SERVICE_TOKEN", raising=False)
+    assert api._serve_preflight("127.0.0.1")  # non-empty warning string
+
+
+def test_serve_preflight_ok_with_token(monkeypatch):
+    monkeypatch.setenv("SCANNER_SERVICE_TOKEN", "sekret")
+    assert api._serve_preflight("0.0.0.0") is None
 
 
 # --- MultiRunManager (real threads, fake pipeline) -------------------------
@@ -190,3 +223,26 @@ def test_manager_reloads_report_from_disk(monkeypatch, tmp_path):
     assert fresh.get(status.run_id) is None
     assert fresh.load_report(status.run_id) is not None
     assert fresh.load_report("never-ran") is None
+
+
+def test_recover_status_done_from_disk(monkeypatch, tmp_path):
+    _install_fake_pipeline(monkeypatch)
+    mgr = MultiRunManager(tmp_path)
+    status = mgr.start(RunConfig(question="recover me"), keys=None)
+    mgr._threads[status.run_id].join(timeout=5)
+
+    # A fresh manager (post-restart) recovers the finished run as "done" from disk.
+    fresh = MultiRunManager(tmp_path)
+    recovered = fresh.recover_status(status.run_id)
+    assert recovered is not None and recovered.state == "done"
+    assert fresh.recover_status("never-ran") is None
+
+
+def test_recover_status_interrupted_run_is_error(tmp_path):
+    from scanner.state import RunStore
+
+    # Materialise a run directory with no saved report (an interrupted run).
+    RunStore(tmp_path, "interrupted-1")
+    mgr = MultiRunManager(tmp_path)
+    recovered = mgr.recover_status("interrupted-1")
+    assert recovered is not None and recovered.state == "error"
