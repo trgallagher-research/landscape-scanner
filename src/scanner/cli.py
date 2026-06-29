@@ -44,6 +44,12 @@ def main(argv: list[str] | None = None) -> int:
     ui_parser.add_argument("--host", default="127.0.0.1", help="Bind host (default localhost).")
     ui_parser.add_argument("--port", type=int, default=8000, help="Bind port (default 8000).")
 
+    api_parser = subparsers.add_parser(
+        "serve-api", help="Launch the hosted JSON API (for a website behind a tunnel)."
+    )
+    api_parser.add_argument("--host", default="127.0.0.1", help="Bind host (default localhost; a tunnel connects here).")
+    api_parser.add_argument("--port", type=int, default=8000, help="Bind port (default 8000).")
+
     args = parser.parse_args(argv)
 
     if args.command == "keys":
@@ -52,6 +58,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_run(args)
     if args.command == "ui":
         return _cmd_ui(args)
+    if args.command == "serve-api":
+        return _cmd_serve_api(args)
     return 2
 
 
@@ -67,6 +75,21 @@ def _cmd_ui(args) -> int:
         )
         return 1
     serve(host=args.host, port=args.port)
+    return 0
+
+
+def _cmd_serve_api(args) -> int:
+    """Launch the hosted JSON API."""
+    try:
+        from .app.api import serve_api
+    except ImportError:
+        print(
+            "The API needs extra packages. Install them with:\n"
+            "  pip install -e \".[app]\"",
+            file=sys.stderr,
+        )
+        return 1
+    serve_api(host=args.host, port=args.port)
     return 0
 
 

@@ -47,8 +47,41 @@ STAGE_LABELS = {
 STAGE_ORDER = ["frame", "discover", "triage", "profile", "read"]
 
 
+def _drive_pipeline(status, config, keys, runs_dir, run_id, update) -> None:
+    """Thread body shared by both managers: build the pipeline, wire progress,
+    run it, and record the outcome on the status snapshot. ``run_id`` names the
+    on-disk run directory; ``update`` is a thread-safe field setter."""
+    from ..pipeline import RunHalted, build_pipeline
+
+    try:
+        pipeline = build_pipeline(config, keys, runs_dir=runs_dir, run_id=run_id)
+    except RuntimeError as error:
+        # Missing keys / misconfig — surfaced verbatim.
+        status.state = "error"
+        status.error = str(error)
+        return
+
+    pipeline.on_progress = lambda **kw: update(status, **kw)
+    status.state = "running"
+
+    try:
+        report = pipeline.run()
+        status.report = report
+        status.spent_usd = report.cost.total_usd
+        status.state = "done"
+        status.detail = "Scan complete."
+    except RunHalted as halt:
+        status.state = "halted"
+        status.error = str(halt)
+        status.spent_usd = pipeline.meter.spent_usd
+    except Exception as error:  # noqa: BLE001 - last-resort guard
+        status.state = "error"
+        status.error = f"{type(error).__name__}: {error}"
+        status.detail = traceback.format_exc(limit=3)
+
+
 class RunManager:
-    """Owns the single active run and its status snapshot."""
+    """Owns the single active run and its status snapshot (local UI / CLI)."""
 
     def __init__(self, runs_dir: Path):
         self.runs_dir = runs_dir
@@ -78,41 +111,12 @@ class RunManager:
         )
         self._status = status
         self._thread = threading.Thread(
-            target=self._run, args=(config, keys, status), daemon=True
+            target=_drive_pipeline,
+            args=(status, config, keys, self.runs_dir, status.run_id, self._update),
+            daemon=True,
         )
         self._thread.start()
         return status
-
-    def _run(self, config: RunConfig, keys, status: RunStatus) -> None:
-        """Thread body: build the pipeline, wire progress, run it."""
-        from ..pipeline import RunHalted, build_pipeline
-
-        try:
-            pipeline = build_pipeline(config, keys, runs_dir=self.runs_dir)
-        except RuntimeError as error:
-            # Missing keys / misconfig — surfaced verbatim to the UI.
-            status.state = "error"
-            status.error = str(error)
-            return
-
-        # Wire the pipeline's progress hook to our status snapshot.
-        pipeline.on_progress = lambda **kw: self._update(status, **kw)
-        status.state = "running"
-
-        try:
-            report = pipeline.run()
-            status.report = report
-            status.spent_usd = report.cost.total_usd
-            status.state = "done"
-            status.detail = "Scan complete."
-        except RunHalted as halt:
-            status.state = "halted"
-            status.error = str(halt)
-            status.spent_usd = pipeline.meter.spent_usd
-        except Exception as error:  # noqa: BLE001 - last-resort guard for the UI
-            status.state = "error"
-            status.error = f"{type(error).__name__}: {error}"
-            status.detail = traceback.format_exc(limit=3)
 
     def _update(self, status: RunStatus, **fields) -> None:
         """Apply a progress update from the pipeline (thread-safe enough for
@@ -121,3 +125,71 @@ class RunManager:
             for key, value in fields.items():
                 setattr(status, key, value)
             # Always refresh the live cost from the meter via the detail hook.
+
+
+def make_unique_run_id(question: str) -> str:
+    """A readable run id that is unique per run, so concurrent scans of the same
+    question never share a directory. The question slug stays for legibility; a
+    short random suffix guarantees uniqueness."""
+    import secrets
+
+    from ..state import make_run_id
+
+    return f"{make_run_id(question)}-{secrets.token_hex(3)}"
+
+
+class MultiRunManager:
+    """Owns many concurrent runs, keyed by run id — the hosted JSON API model.
+
+    Unlike RunManager (one global run, for the local single-user UI), this keeps a
+    registry so a multi-user website can run several scans at once and poll each by
+    id. Runs still persist to ``runs/<run_id>/`` on disk, so a finished report can be
+    reloaded after a process restart even if it's no longer in the registry."""
+
+    def __init__(self, runs_dir: Path):
+        self.runs_dir = runs_dir
+        self._runs: dict[str, RunStatus] = {}
+        self._threads: dict[str, threading.Thread] = {}
+        self._lock = threading.Lock()
+
+    def start(self, config: RunConfig, keys) -> RunStatus:
+        """Begin a scan in the background and return its status (with the run id)."""
+        run_id = make_unique_run_id(config.question)
+        status = RunStatus(
+            run_id=run_id,
+            question=config.question,
+            budget_usd=config.budget_usd,
+        )
+        with self._lock:
+            self._runs[run_id] = status
+        thread = threading.Thread(
+            target=_drive_pipeline,
+            args=(status, config, keys, self.runs_dir, run_id, self._update),
+            daemon=True,
+        )
+        self._threads[run_id] = thread
+        thread.start()
+        return status
+
+    def get(self, run_id: str) -> RunStatus | None:
+        """The live status for a run, or None if this process never started it."""
+        return self._runs.get(run_id)
+
+    def load_report(self, run_id: str):
+        """Reload a finished report from disk for a run not held in memory (e.g.
+        after a process restart). Returns a Report, or None if absent."""
+        from ..models import Report
+        from ..state import RunStore
+
+        # Don't materialise a directory for an unknown id (RunStore would mkdir it).
+        if not (self.runs_dir / run_id).is_dir():
+            return None
+        store = RunStore(self.runs_dir, run_id)
+        if not store.has_stage("report"):
+            return None
+        return Report.model_validate(store.load_stage("report"))
+
+    def _update(self, status: RunStatus, **fields) -> None:
+        with self._lock:
+            for key, value in fields.items():
+                setattr(status, key, value)

@@ -551,9 +551,16 @@ class Pipeline:
         return report
 
 
-def build_pipeline(config: RunConfig, keys, runs_dir: Path) -> Pipeline:
+def build_pipeline(
+    config: RunConfig, keys, runs_dir: Path, run_id: str | None = None
+) -> Pipeline:
     """Wire a live pipeline from config + keys. Refuses to run without the
-    required keys — there is no silent fake fallback, by design."""
+    required keys — there is no silent fake fallback, by design.
+
+    ``run_id`` names the on-disk run directory. Defaults to a slug derived from
+    the question (the single-run CLI/local-UI behaviour). The multi-run JSON API
+    passes an explicit, unique id so concurrent scans of the same question don't
+    collide on disk."""
     from .keys import ProviderKeys  # local import to avoid cycles in tests
     from .llm.anthropic_client import AnthropicClient
     from .llm.openrouter import OpenRouterClient
@@ -579,5 +586,5 @@ def build_pipeline(config: RunConfig, keys, runs_dir: Path) -> Pipeline:
 
     meter = BudgetMeter(budget_usd=config.budget_usd)
     router = ModelRouter(clients, meter, profile=config.model_profile)
-    store = RunStore(runs_dir, make_run_id(config.question))
+    store = RunStore(runs_dir, run_id or make_run_id(config.question))
     return Pipeline(config, router, MultiSearch(search_providers), store, meter)
