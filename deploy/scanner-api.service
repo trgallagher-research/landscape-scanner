@@ -1,0 +1,39 @@
+# systemd service for the Landscape Scanner HOSTED JSON API (`scanner serve-api`).
+#
+# This is the multi-run, token-authenticated API that a website calls behind a
+# Cloudflare Tunnel — NOT the no-auth local UI (that is the separate
+# landscape-scanner.service, which runs `scanner ui`). Do not enable both on the
+# same port.
+#
+# It binds 127.0.0.1 only; cloudflared (a separate service) connects to that local
+# port and exposes it as a tunnelled hostname, fronted by Cloudflare Access.
+#
+# The app bearer token is provided via an EnvironmentFile that is NOT in git:
+#   /etc/landscape-scanner-api.env   containing:   SCANNER_SERVICE_TOKEN=...
+#   (create it root-owned, chmod 600). Optional: SCANNER_MAX_CONCURRENT_RUNS,
+#   SCANNER_MAX_BUDGET_USD. Provider keys (Serper/Anthropic) are read by the app
+#   from the repo's local .env via WorkingDirectory below.
+#
+# Install (adjust User=/paths if your layout differs):
+#   sudo cp deploy/scanner-api.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now scanner-api
+# Check: systemctl status scanner-api    Logs: journalctl -u scanner-api -f
+
+[Unit]
+Description=Landscape Scanner hosted API (localhost; via Cloudflare Tunnel)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=tim
+WorkingDirectory=/home/tim/landscape-scanner
+EnvironmentFile=/etc/landscape-scanner-api.env
+ExecStart=/home/tim/landscape-scanner/.venv/bin/scanner serve-api --host 127.0.0.1 --port 8000
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
