@@ -84,11 +84,19 @@ The design therefore keeps the app **local-first**:
   repo and use *their own* keys on *their own* machine. Nobody spends anyone
   else's credits.
 
-Do **not** bind the app to `0.0.0.0` or port-forward it to the internet
+Do **not** bind `scanner ui` to `0.0.0.0` or port-forward it to the internet
 unless you add authentication first — that would let anyone who finds it
 spend your keys.
 
-## Running on a home server (e.g. an Intel NUC) over SSH
+**Two run modes, two trust models.** Everything above describes `scanner ui` —
+the single-user local interface, which has no login and therefore stays bound to
+localhost. There is also `scanner serve-api`: a **token-authenticated** JSON API
+built to be exposed safely to a web front-end. It validates a bearer token on
+every request, renders no HTML, and never mounts the no-auth UI — and `serve-api`
+refuses to bind a non-local host unless `SCANNER_SERVICE_TOKEN` is set. See
+*Running as a hosted API* below.
+
+## Running the local UI on a home server (e.g. an Intel NUC) over SSH
 
 You can run the scanner on an always-on box you SSH into, and reach the UI
 from your laptop **without exposing it to the network** — by keeping it bound
@@ -137,11 +145,48 @@ your authenticated SSH connection — nobody else on the network or the
 internet can reach it or spend your keys. (On Windows, the same
 `ssh -N -L ...` command works in PowerShell.)
 
+## Running as a hosted API (web front-end)
+
+To drive the scanner from a web app — multiple users, runs you start and poll
+remotely — run the authenticated JSON API instead of the local UI. This is how
+the engine is deployed in production today: it sits on the always-on box and a
+separate, login-gated website calls it as a proxy.
+
+**1. Run the API** (`scanner serve-api`) with a bearer token. It is multi-run
+(keyed by run id), binds `127.0.0.1`, and renders no HTML:
+
+```bash
+SCANNER_SERVICE_TOKEN=$(openssl rand -hex 32) \
+  .venv/bin/scanner serve-api --host 127.0.0.1 --port 8000
+```
+
+As a reboot-safe service, use `deploy/scanner-api.service` (the token is supplied
+via an `EnvironmentFile`, kept out of git):
+
+```bash
+sudo cp deploy/scanner-api.service /etc/systemd/system/
+sudo systemctl enable --now scanner-api
+```
+
+**2. Expose it without opening a port** — put it behind a **Cloudflare Tunnel**
+(`cloudflared` connects out from the box, so nothing is bound to the internet),
+fronted by **Cloudflare Access** with a **service token**, so only your web app
+can reach it. Each request then carries *both* the Access service-token headers
+and the app bearer — two independent layers.
+
+**3. The web app** is a thin, login-gated front end that calls the API, stores
+reports privately per user, and never exposes the scanner directly. The optional
+per-request `keys` field lets each user bring their own provider keys; without it
+the engine uses its own `.env`. See `docs/how-it-works.md` for the full
+end-to-end architecture and reliability model.
+
 ## Status
 
-Core engine, local web UI, and shareable HTML reports are built and tested
-(offline test suite). Calibration against a hand-built gold set is the
-remaining step before fully trusting numbers on a new domain.
+Core engine, local web UI, the hosted JSON API (`serve-api`), and shareable HTML
+reports are built and tested (offline test suite). The engine is deployed in
+production behind a Cloudflare Tunnel + Access, driven by a login-gated web front
+end. Calibration against a hand-built gold set is the remaining step before fully
+trusting numbers on a new domain.
 
 ## Keys
 
