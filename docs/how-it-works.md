@@ -9,7 +9,7 @@ The scanner runs as a funnel that stays cheap and focused, followed by a verific
 ```mermaid
 flowchart TD
     Q["Plain-English question"] --> F["Frame: plan search queries and landscape segments"]
-    F --> D["Discover: run queries across every live search index (Serper, optionally Brave)"]
+    F --> D["Discover: run queries across two independent indexes (Serper + Brave)"]
     D --> T["Triage: cheap pass that ranks every candidate from its snippets"]
     T -->|"top ~20-25 entities"| P["Deep profiling: scrape a few pages per entity"]
     T -->|"the rest"| LT["Long tail: kept as one-line entries, never invented away"]
@@ -36,7 +36,7 @@ flowchart TD
 **The funnel — broad, then narrow, to stay cheap and focused.**
 
 1. **Frame.** One cheap planning call turns your question into a set of search queries and a first-draft way to carve up the landscape into segments.
-2. **Discover broadly.** Every query is run across each configured search index. The scanner uses Serper (a Google-backed search API) and, if you've added a key, Brave as a second, independent index. It then pulls candidate entity names out of the results — and even at this early stage it can only pick out names that actually appear in the result text, not names the model "remembers."
+2. **Discover broadly.** Every query is run across two **independent** search indexes — Serper (a Google-backed search API) and Brave — so a second engine can corroborate, or surface, what the first one finds. That second index is what makes the cross-index agreement signal in the confidence step (8) possible. (Brave is optional in the engine, but this deployment runs both.) It then pulls candidate entity names out of the results — and even at this early stage it can only pick out names that actually appear in the result text, not names the model "remembers."
 3. **Cheap triage.** All candidates are ranked from their search snippets in a few batched, inexpensive passes. The strongest ~20–25 go forward for deep profiling; clear noise is dropped, and the remaining relevant-but-not-profiled entities are kept as a **long tail** of one-line entries. They stay visible in the report so the overview never claims a category is empty when examples are sitting right there, unprofiled.
 4. **Deep profiling.** For each shortlisted entity, the scanner fetches (scrapes) a few of its source pages. This is where the real money goes, which is exactly why it is capped to the shortlist.
 
@@ -70,12 +70,12 @@ flowchart LR
     W --> CF["Cloudflare Tunnel, fronted by Cloudflare Access (machine-to-machine service token)"]
     CF --> ENG["Scanner engine: Python on the owner's home server, bound to localhost"]
     ENG --> AN["Anthropic / Claude: verification and synthesis reasoning"]
-    ENG --> SE["Web search API: Serper, optionally Brave"]
+    ENG --> SE["Search: Serper + Brave (two independent indexes)"]
     ENG --> OR["OpenRouter: cheap high-volume extraction (optional)"]
     ENG --> RP["Private per-user reports"]
 ```
 
-In words: a researcher signs in to a small web app (Next.js, hosted on Vercel) that acts purely as a **login-gated front door**. The engine itself runs on the owner's home server, bound to localhost so it is not exposed to the network directly. The only way in is a **Cloudflare Tunnel fronted by Cloudflare Access**, using a machine-to-machine **service token** that only the web app holds — so the engine answers the web app and nothing else. The engine runs on the **owner's own API keys**: Anthropic's Claude for the trust-critical verification and synthesis reasoning, a web-search API (Serper, optionally Brave) for discovery, and optionally OpenRouter for cheap, high-volume extraction. Reports are stored privately per user.
+In words: a researcher signs in to a small web app (Next.js, hosted on Vercel) that acts purely as a **login-gated front door**. The engine itself runs on the owner's home server, bound to localhost so it is not exposed to the network directly. The only way in is a **Cloudflare Tunnel fronted by Cloudflare Access**, using a machine-to-machine **service token** that only the web app holds — so the engine answers the web app and nothing else. The engine runs on the **owner's own API keys**: Anthropic's Claude for the trust-critical verification and synthesis reasoning, two independent web-search indexes (Serper + Brave) for discovery, and optionally OpenRouter for cheap, high-volume extraction. Reports are stored privately per user.
 
 ## What it deliberately does NOT do
 
